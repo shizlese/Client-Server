@@ -20,14 +20,19 @@ private:
             SqlConnection^ connection = gcnew SqlConnection(connectionString);
             connection->Open();
 
+            int currentUserId = GetUserIdByUsername(currentUser); // Используем функцию для получения ID текущего пользователя
+
             // Получение сообщений для указанного чата
-            String^ query = "SELECT m.Username, m.Timestamp, m.MessageText FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName";
+            String^ query = "SELECT u.Username, m.Timestamp, m.MessageText FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
             SqlCommand^ command = gcnew SqlCommand(query, connection);
             command->Parameters->AddWithValue("@chatName", chatName);
 
             SqlDataReader^ reader = command->ExecuteReader();
 
-            // Отправка сообщений клиенту
+            // Создаем StringBuilder для сбора всех сообщений
+            StringBuilder^ messagesBuilder = gcnew StringBuilder();
+
+            // Собираем сообщения в одну строку
             while (reader->Read()) {
                 String^ username = reader->GetString(0);
                 DateTime timestamp = reader->GetDateTime(1);
@@ -36,10 +41,18 @@ private:
                 // Проверка, является ли отправитель текущим пользователем
                 String^ messageDisplay = (username == currentUser) ? "You" : username;
 
+                // Форматирование времени сообщения
+                String^ formattedTime = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
+
                 // Отображение в RichTextBox
-                String^ displayMessage = String::Format("{0} ({1}): {2}\n", messageDisplay, timestamp.ToString(), messageText);
-                SendResponse(networkStream, displayMessage);
+                String^ displayMessage = String::Format("message:{0} ({1}): {2}\n", messageDisplay, formattedTime, messageText);
+
+                // Добавляем сообщение к StringBuilder
+                messagesBuilder->Append(displayMessage);
             }
+
+            // Отправляем все сообщения как одну строку
+            SendResponse(networkStream, messagesBuilder->ToString());
 
             reader->Close();
             connection->Close();
@@ -51,6 +64,7 @@ private:
             SendResponse(networkStream, errorMessage);
         }
     }
+
     // Функция для получения UserID по имени пользователя из базы данных
     int GetUserIdByUsername(String^ username) {
         int userId = -1;  // Инициализируем значение -1, чтобы указать, что пользователя не найдено
@@ -173,8 +187,6 @@ private:
         SendResponse(networkStream, chatList);
         Console::WriteLine("Chat list sent to client");
     }
-
-
 
     void HandleCreateChatRequest(NetworkStream^ networkStream, String^ requestData) {
         array<String^>^ createChatData = requestData->Split(':');
@@ -363,6 +375,25 @@ public:
             }
             else if (requestData->StartsWith("send_message_request")) {
                 HandleSendMessageRequest(networkStream, requestData);
+            }
+            else if (requestData->StartsWith("get_chat_history_request:"))
+            {
+array<String^>^ requestParts = requestData->Split(':');
+				if (requestParts->Length == 3) {
+					String^ chatName = requestParts[1];
+					String^ currentUser = requestParts[2];
+					HandleGetChatMessagesRequest(networkStream, chatName, currentUser);
+				}
+				else {
+					String^ response = "Invalid get chat history request format";
+					SendResponse(networkStream, response);
+					Console::WriteLine("Invalid get chat history request format");
+				}
+			}
+			else {
+				String^ response = "Invalid request format";
+				SendResponse(networkStream, response);
+				Console::WriteLine("Invalid request format");
             }
             tcpClient->Close();
         }
