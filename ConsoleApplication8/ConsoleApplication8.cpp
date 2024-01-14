@@ -14,51 +14,144 @@ private:
         array<Byte>^ responseBytes = Encoding::UTF8->GetBytes(response);
         networkStream->Write(responseBytes, 0, responseBytes->Length);
     }
-    void HandleGetChatMessagesRequest(NetworkStream^ networkStream, String^ chatName, String^ currentUser) {
-    String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
-    try {
-        SqlConnection^ connection = gcnew SqlConnection(connectionString);
-        connection->Open();
-
-        int currentUserId = GetUserIdByUsername(currentUser);
-
-        String^ query = "SELECT u.Username, m.Timestamp, m.MessageText FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
-        SqlCommand^ command = gcnew SqlCommand(query, connection);
-        command->Parameters->AddWithValue("@chatName", chatName);
-
-        SqlDataReader^ reader = command->ExecuteReader();
-
-        StringBuilder^ messagesBuilder = gcnew StringBuilder();
-        while (reader->Read()) {
-            String^ username = reader->GetString(0);
-            DateTime timestamp = reader->GetDateTime(1);
-            String^ messageText = reader->GetString(2);
-
-            String^ messageDisplay;
-            if (username == currentUser) {
-                messageDisplay = "You";
-            }
-            else {
-                messageDisplay += username;
-            }
-
-            String^ formattedTime = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
-            String^ displayMessage = String::Format("message:{0} ({1}): {2}\n", messageDisplay, formattedTime, messageText);
-
-            messagesBuilder->Append(displayMessage);
+    //files func
+    void HandleSendFileRequest(NetworkStream^ networkStream, String^ chatName, String^ username, array<Byte>^ fileData, String^ fileName) {
+        Console::WriteLine("Started processing file send request for user '{0}' and file '{1}'.", username, fileName);
+        int userId = GetUserIdByUsername(username);
+        if (userId == -1) {
+            SendResponse(networkStream, "User not found");
+            return;
         }
+        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+        SqlConnection^ connection = gcnew SqlConnection(connectionString);
+        try {
+            connection->Open();
 
-        SendResponse(networkStream, messagesBuilder->ToString());
+            String^ query = "INSERT INTO Messages (ChatName, UserID, FileName, FileData, MessageText, Timestamp) VALUES (@chatName, @userId, @fileName, @fileData, 'file', @timestamp)";
+            SqlCommand^ command = gcnew SqlCommand(query, connection);
+            command->Parameters->AddWithValue("@chatName", chatName);
+            command->Parameters->AddWithValue("@userId", userId);
+            command->Parameters->AddWithValue("@fileName", fileName);
 
-        reader->Close();
-        connection->Close();
+            // Используйте VARBINARY(MAX) для хранения бинарных данных файла
+            SqlParameter^ fileDataParam = gcnew SqlParameter("@fileData", System::Data::SqlDbType::VarBinary, -1);
+            fileDataParam->Value = fileData;
+            command->Parameters->Add(fileDataParam);
+
+            command->Parameters->AddWithValue("@timestamp", DateTime::Now);
+
+            command->ExecuteNonQuery();
+            SendResponse(networkStream, "File sent successfully");
+        }
+        catch (Exception^ ex) {
+            Console::WriteLine("Error: " + ex->Message);
+            SendResponse(networkStream, "Error sending file");
+        }
+        finally {
+            connection->Close();
+            Console::WriteLine("Completed processing file send request for user '{0}' and file '{1}'.", username, fileName);
+        }
     }
-    catch (Exception^ ex) {
-        Console::WriteLine("Error: " + ex->Message);
-        String^ errorMessage = "chat_messages_response:Error retrieving chat messages";
-        SendResponse(networkStream, errorMessage);
+
+
+    void HandleReceiveFileRequest(NetworkStream^ networkStream, String^ chatName, int messageId) {
+        Console::WriteLine("Started processing file receive request for chat '{0}' and message ID '{1}'.", chatName, messageId);
+        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+        SqlConnection^ connection = gcnew SqlConnection(connectionString);
+        try {
+            connection->Open();
+
+            String^ query = "SELECT FileName, FileData FROM Messages WHERE MessageID = @messageId AND ChatName = @chatName";
+            SqlCommand^ command = gcnew SqlCommand(query, connection);
+            command->Parameters->AddWithValue("@messageId", messageId);
+            command->Parameters->AddWithValue("@chatName", chatName);
+
+            SqlDataReader^ reader = command->ExecuteReader();
+            if (reader->Read()) {
+                String^ fileName = reader->GetString(0);
+                array<Byte>^ fileData = (array<Byte>^)reader["FileData"];
+
+                // Отправить клиенту имя файла и размер файла
+                // Отправка информации о файле
+                String^ fileInfo = String::Format("{0}:{1}", fileName, fileData->Length);
+                array<Byte>^ fileInfoBytes = Encoding::UTF8->GetBytes(fileInfo);
+                networkStream->Write(fileInfoBytes, 0, fileInfoBytes->Length);
+
+                // Отправка файла частями
+                const int bufferSize = 1024; // Размер буфера
+                for (int i = 0; i < fileData->Length; i += bufferSize) {
+                    int chunkSize = Math::Min(bufferSize, fileData->Length - i);
+                    networkStream->Write(fileData, i, chunkSize);
+                }
+            }
+        }
+        catch (Exception^ ex) {
+            Console::WriteLine("Error: " + ex->Message);
+            SendResponse(networkStream, "Error receiving file");
+        }
+        finally {
+            connection->Close();
+            Console::WriteLine("Completed processing file receive request for chat '{0}' and message ID '{1}'.", chatName, messageId);
+        }
     }
-}
+
+
+    void HandleGetChatMessagesRequest(NetworkStream^ networkStream, String^ chatName, String^ currentUser) {
+        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+        try {
+            SqlConnection^ connection = gcnew SqlConnection(connectionString);
+            connection->Open();
+
+            int currentUserId = GetUserIdByUsername(currentUser);
+
+            // Обновленный запрос для получения текстовых сообщений и информации о файлах
+            String^ query = "SELECT u.Username, m.Timestamp, m.MessageText, m.FileName FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
+            SqlCommand^ command = gcnew SqlCommand(query, connection);
+            command->Parameters->AddWithValue("@chatName", chatName);
+
+            SqlDataReader^ reader = command->ExecuteReader();
+
+            StringBuilder^ messagesBuilder = gcnew StringBuilder();
+            while (reader->Read()) {
+                String^ username = reader->GetString(0);
+                DateTime timestamp = reader->GetDateTime(1);
+                String^ messageText = reader->GetString(2);
+                String^ fileName = reader->IsDBNull(3) ? "" : reader->GetString(3);
+
+                String^ messageDisplay;
+                if (username == currentUser) {
+                    messageDisplay = "You";
+                }
+                else {
+                    messageDisplay += username;
+                }
+
+                String^ formattedTime = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
+
+                // Формирование строки сообщения
+                String^ displayMessage;
+                if (!String::IsNullOrEmpty(fileName)) {
+                    displayMessage = String::Format("file:{0} ({1}): {2}\n", messageDisplay, formattedTime, fileName);
+                }
+                else {
+                    displayMessage = String::Format("message:{0} ({1}): {2}\n", messageDisplay, formattedTime, messageText);
+                }
+
+                messagesBuilder->Append(displayMessage);
+            }
+
+            SendResponse(networkStream, messagesBuilder->ToString());
+
+            reader->Close();
+            connection->Close();
+        }
+        catch (Exception^ ex) {
+            Console::WriteLine("Error: " + ex->Message);
+            String^ errorMessage = "chat_messages_response:Error retrieving chat messages";
+            SendResponse(networkStream, errorMessage);
+        }
+    }
+
 
     // Функция для получения UserID по имени пользователя из базы данных
     int GetUserIdByUsername(String^ username) {
@@ -386,6 +479,37 @@ array<String^>^ requestParts = requestData->Split(':');
 					Console::WriteLine("Invalid get chat history request format");
 				}
 			}
+            else if (requestData->StartsWith("send_file_request")) {
+                // Разбиение строки запроса на части
+                array<String^>^ parts = requestData->Split(':');
+                if (parts->Length >= 4) {
+                    String^ chatName = parts[1];
+                    String^ username = parts[2];
+                    String^ fileName = parts[3];
+
+                    // Предполагается, что файловые данные следуют непосредственно за заголовком запроса
+                    // Необходимо собрать оставшиеся части как данные файла
+                    array<Byte>^ fileData = gcnew array<Byte>(bytesRead - (chatName->Length + username->Length + fileName->Length + 4));
+                    Array::Copy(bytes, chatName->Length + username->Length + fileName->Length + 4, fileData, 0, fileData->Length);
+
+                    HandleSendFileRequest(networkStream, chatName, username, fileData, fileName);
+                }
+                else {
+                    SendResponse(networkStream, "Invalid send file request format");
+                }
+            }
+            else if (requestData->StartsWith("get_file_request")) {
+                // Разбиение строки запроса на части
+                array<String^>^ parts = requestData->Split(':');
+                if (parts->Length == 3) {
+                    String^ chatName = parts[1];
+                    int messageId = Int32::Parse(parts[2]);
+                    HandleReceiveFileRequest(networkStream, chatName, messageId);
+                }
+                else {
+                    SendResponse(networkStream, "Invalid get file request format");
+                }
+            }
 			else {
 				String^ response = "Invalid request format";
 				SendResponse(networkStream, response);
