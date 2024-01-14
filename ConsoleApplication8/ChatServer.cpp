@@ -11,7 +11,7 @@ private:
     TcpClient^ tcpClient;
     // Метод для открытия подключения к базе данных
     SqlConnection^ OpenDatabaseConnection() {
-        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;User ID=Admin; Password=Admin;";
         SqlConnection^ connection = gcnew SqlConnection(connectionString);
 
         try {
