@@ -27,7 +27,7 @@ private:
         try {
             connection->Open();
 
-            String^ query = "INSERT INTO Messages (ChatName, UserID, FileName, FileData, MessageText, Timestamp) VALUES (@chatName, @userId, @fileName, @fileData, 'file', @timestamp)";
+            String^ query = "INSERT INTO Messages (ChatName, UserID, FileName, FileData, MessageText, Timestamp, FileSize) VALUES (@chatName, @userId, @fileName, @fileData, 'file', @timestamp, @fileSize)";
             SqlCommand^ command = gcnew SqlCommand(query, connection);
             command->Parameters->AddWithValue("@chatName", chatName);
             command->Parameters->AddWithValue("@userId", userId);
@@ -40,7 +40,27 @@ private:
 
             command->Parameters->AddWithValue("@timestamp", DateTime::Now);
 
+            // Добавляем размер файла в параметры команды
+            int fileSize = fileData->Length;
+            command->Parameters->AddWithValue("@fileSize", fileSize);
+
             command->ExecuteNonQuery();
+
+            // Отправьте размер файла клиенту перед отправкой файла
+            String^ fileInfo = String::Format("{0}:{1}", fileName, fileSize);
+            array<Byte>^ fileInfoBytes = Encoding::UTF8->GetBytes(fileInfo);
+            networkStream->Write(fileInfoBytes, 0, fileInfoBytes->Length);
+
+            // Отправка файла частями
+            const int bufferSize = 1024; // Размер буфера
+            for (int i = 0; i < fileSize; i += bufferSize) {
+                int chunkSize = Math::Min(bufferSize, fileSize - i);
+                networkStream->Write(fileData, i, chunkSize);
+            }
+
+            // Добавьте информацию о размере файла в логи
+            Console::WriteLine("File '{0}' sent successfully. Size: {1} bytes", fileName, fileSize);
+
             SendResponse(networkStream, "File sent successfully");
         }
         catch (Exception^ ex) {
@@ -54,34 +74,41 @@ private:
     }
 
 
-    void HandleReceiveFileRequest(NetworkStream^ networkStream, String^ chatName, int messageId) {
-        Console::WriteLine("Started processing file receive request for chat '{0}' and message ID '{1}'.", chatName, messageId);
+
+
+    void HandleReceiveFileRequest(NetworkStream^ networkStream, String^ fileName, String^ chatName) {
+        Console::WriteLine("Started processing file receive request for chat.", chatName);
         String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
         SqlConnection^ connection = gcnew SqlConnection(connectionString);
         try {
             connection->Open();
 
-            String^ query = "SELECT FileName, FileData FROM Messages WHERE MessageID = @messageId AND ChatName = @chatName";
+            String^ query = "SELECT FileName, FileData FROM Messages WHERE ChatName = @chatName AND FileName = @fileName";
             SqlCommand^ command = gcnew SqlCommand(query, connection);
-            command->Parameters->AddWithValue("@messageId", messageId);
             command->Parameters->AddWithValue("@chatName", chatName);
+            command->Parameters->AddWithValue("@fileName", fileName);
 
             SqlDataReader^ reader = command->ExecuteReader();
             if (reader->Read()) {
                 String^ fileName = reader->GetString(0);
                 array<Byte>^ fileData = (array<Byte>^)reader["FileData"];
+                int fileSize = fileData->Length;
 
-                // Отправить клиенту имя файла и размер файла
-                // Отправка информации о файле
-                String^ fileInfo = String::Format("{0}:{1}", fileName, fileData->Length);
-                array<Byte>^ fileInfoBytes = Encoding::UTF8->GetBytes(fileInfo);
-                networkStream->Write(fileInfoBytes, 0, fileInfoBytes->Length);
+                // Проверка размера файла перед отправкой (не более 20 МБ)
+                if (fileSize <= 20 * 1024 * 1024) { // 20 МБ в байтах
+                    // Отправить клиенту имя файла и размер файла
+                    // Отправка информации о файле
+                    String^ fileInfo = String::Format("{0}:{1}", fileName, fileSize);
+                    array<Byte>^ fileInfoBytes = Encoding::UTF8->GetBytes(fileInfo);
+                    networkStream->Write(fileInfoBytes, 0, fileInfoBytes->Length);
+                    Console::WriteLine(fileInfo);
 
-                // Отправка файла частями
-                const int bufferSize = 1024; // Размер буфера
-                for (int i = 0; i < fileData->Length; i += bufferSize) {
-                    int chunkSize = Math::Min(bufferSize, fileData->Length - i);
-                    networkStream->Write(fileData, i, chunkSize);
+                    // Отправка всего файла сразу
+                    networkStream->Write(fileData, 0, fileSize);
+                }
+                else {
+                    Console::WriteLine("File size exceeds the limit (20 MB).");
+                    SendResponse(networkStream, "File size exceeds the limit (20 MB)");
                 }
             }
         }
@@ -91,9 +118,11 @@ private:
         }
         finally {
             connection->Close();
-            Console::WriteLine("Completed processing file receive request for chat '{0}' and message ID '{1}'.", chatName, messageId);
+            Console::WriteLine("Completed processing file receive request for chat '{0}'.", chatName);
         }
     }
+
+
 
 
     void HandleGetChatMessagesRequest(NetworkStream^ networkStream, String^ chatName, String^ currentUser) {
@@ -105,7 +134,7 @@ private:
             int currentUserId = GetUserIdByUsername(currentUser);
 
             // Обновленный запрос для получения текстовых сообщений и информации о файлах
-            String^ query = "SELECT u.Username, m.Timestamp, m.MessageText, m.FileName FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
+            String^ query = "SELECT u.Username, m.Timestamp, m.MessageText, m.FileName, m.FileSize FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
             SqlCommand^ command = gcnew SqlCommand(query, connection);
             command->Parameters->AddWithValue("@chatName", chatName);
 
@@ -117,6 +146,7 @@ private:
                 DateTime timestamp = reader->GetDateTime(1);
                 String^ messageText = reader->GetString(2);
                 String^ fileName = reader->IsDBNull(3) ? "" : reader->GetString(3);
+                int fileSize = reader->IsDBNull(4) ? 0 : reader->GetInt32(4); // Получение размера файла
 
                 String^ messageDisplay;
                 if (username == currentUser) {
@@ -131,7 +161,7 @@ private:
                 // Формирование строки сообщения
                 String^ displayMessage;
                 if (!String::IsNullOrEmpty(fileName)) {
-                    displayMessage = String::Format("file:{0} ({1}): {2}\n", messageDisplay, formattedTime, fileName);
+                    displayMessage = String::Format("file:{0} ({1}) [{2} bytes]: {3}\n", messageDisplay, formattedTime, fileSize, fileName);
                 }
                 else {
                     displayMessage = String::Format("message:{0} ({1}): {2}\n", messageDisplay, formattedTime, messageText);
@@ -139,6 +169,9 @@ private:
 
                 messagesBuilder->Append(displayMessage);
             }
+
+            // Логирование размера файла и названия файла перед отправкой списка сообщений
+            Console::WriteLine(messagesBuilder->ToString());
 
             SendResponse(networkStream, messagesBuilder->ToString());
 
@@ -151,6 +184,8 @@ private:
             SendResponse(networkStream, errorMessage);
         }
     }
+
+
 
 
     // Функция для получения UserID по имени пользователя из базы данных
@@ -502,9 +537,9 @@ array<String^>^ requestParts = requestData->Split(':');
                 // Разбиение строки запроса на части
                 array<String^>^ parts = requestData->Split(':');
                 if (parts->Length == 3) {
-                    String^ chatName = parts[1];
-                    int messageId = Int32::Parse(parts[2]);
-                    HandleReceiveFileRequest(networkStream, chatName, messageId);
+                    String^ fileName = parts[1];
+                    String^ chatName = parts[2];
+                    HandleReceiveFileRequest(networkStream, fileName, chatName);
                 }
                 else {
                     SendResponse(networkStream, "Invalid get file request format");
