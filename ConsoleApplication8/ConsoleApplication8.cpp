@@ -15,55 +15,50 @@ private:
         networkStream->Write(responseBytes, 0, responseBytes->Length);
     }
     void HandleGetChatMessagesRequest(NetworkStream^ networkStream, String^ chatName, String^ currentUser) {
-        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
-        try {
-            SqlConnection^ connection = gcnew SqlConnection(connectionString);
-            connection->Open();
+    String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+    try {
+        SqlConnection^ connection = gcnew SqlConnection(connectionString);
+        connection->Open();
 
-            int currentUserId = GetUserIdByUsername(currentUser); // Используем функцию для получения ID текущего пользователя
+        int currentUserId = GetUserIdByUsername(currentUser);
 
-            // Получение сообщений для указанного чата
-            String^ query = "SELECT u.Username, m.Timestamp, m.MessageText FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
-            SqlCommand^ command = gcnew SqlCommand(query, connection);
-            command->Parameters->AddWithValue("@chatName", chatName);
+        String^ query = "SELECT u.Username, m.Timestamp, m.MessageText FROM Messages m INNER JOIN Users u ON m.UserID = u.UserID WHERE m.ChatName = @chatName ORDER BY m.Timestamp";
+        SqlCommand^ command = gcnew SqlCommand(query, connection);
+        command->Parameters->AddWithValue("@chatName", chatName);
 
-            SqlDataReader^ reader = command->ExecuteReader();
+        SqlDataReader^ reader = command->ExecuteReader();
 
-            // Создаем StringBuilder для сбора всех сообщений
-            StringBuilder^ messagesBuilder = gcnew StringBuilder();
+        StringBuilder^ messagesBuilder = gcnew StringBuilder();
+        while (reader->Read()) {
+            String^ username = reader->GetString(0);
+            DateTime timestamp = reader->GetDateTime(1);
+            String^ messageText = reader->GetString(2);
 
-            // Собираем сообщения в одну строку
-            while (reader->Read()) {
-                String^ username = reader->GetString(0);
-                DateTime timestamp = reader->GetDateTime(1);
-                String^ messageText = reader->GetString(2);
-
-                // Проверка, является ли отправитель текущим пользователем
-                String^ messageDisplay = (username == currentUser) ? "You" : username;
-
-                // Форматирование времени сообщения
-                String^ formattedTime = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
-
-                // Отображение в RichTextBox
-                String^ displayMessage = String::Format("message:{0} ({1}): {2}\n", messageDisplay, formattedTime, messageText);
-
-                // Добавляем сообщение к StringBuilder
-                messagesBuilder->Append(displayMessage);
+            String^ messageDisplay;
+            if (username == currentUser) {
+                messageDisplay = "You";
+            }
+            else {
+                messageDisplay += username;
             }
 
-            // Отправляем все сообщения как одну строку
-            SendResponse(networkStream, messagesBuilder->ToString());
+            String^ formattedTime = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
+            String^ displayMessage = String::Format("message:{0} ({1}): {2}\n", messageDisplay, formattedTime, messageText);
 
-            reader->Close();
-            connection->Close();
+            messagesBuilder->Append(displayMessage);
         }
-        catch (Exception^ ex) {
-            Console::WriteLine("Error: " + ex->Message);
-            // Обработка ошибок при подключении к базе данных или выполнении запроса
-            String^ errorMessage = "chat_messages_response:Error retrieving chat messages";
-            SendResponse(networkStream, errorMessage);
-        }
+
+        SendResponse(networkStream, messagesBuilder->ToString());
+
+        reader->Close();
+        connection->Close();
     }
+    catch (Exception^ ex) {
+        Console::WriteLine("Error: " + ex->Message);
+        String^ errorMessage = "chat_messages_response:Error retrieving chat messages";
+        SendResponse(networkStream, errorMessage);
+    }
+}
 
     // Функция для получения UserID по имени пользователя из базы данных
     int GetUserIdByUsername(String^ username) {
@@ -332,6 +327,7 @@ private:
     }
 
 public:
+    //запуск сервера и обработка полученных запросов
     Server() {
         tcpListener = gcnew TcpListener(IPAddress::Parse("127.0.0.1"), 1234);
         tcpListener->Start();
