@@ -97,11 +97,9 @@ private:
 
     // Функция для получения файла из базы данных
     bool GetFileFromDatabase(String^ chatName, String^ fileName, NetworkStream^ networkStream) {
-        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+        SqlConnection^ connection = OpenDatabaseConnection();
 
         try {
-            SqlConnection^ connection = gcnew SqlConnection(connectionString);
-            connection->Open();
 
             String^ query = "SELECT FileData FROM Messages WHERE ChatName = @chatName AND FileName = @fileName";
             SqlCommand^ command = gcnew SqlCommand(query, connection);
@@ -168,10 +166,8 @@ private:
 
     // Функция для обработки запроса на получение сообщений из чата
     void HandleGetChatMessagesRequest(NetworkStream^ networkStream, String^ chatName, String^ currentUser) {
-        String^ connectionString = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=chat;Integrated Security=True;";
+        SqlConnection^ connection = OpenDatabaseConnection();
         try {
-            SqlConnection^ connection = gcnew SqlConnection(connectionString);
-            connection->Open();
 
             // Получаем идентификатор текущего пользователя
             int currentUserId = GetUserIdByUsername(currentUser);
@@ -612,11 +608,13 @@ public:
     // Конструктор класса сервера, запускающий сервер и обрабатывающий запросы от клиентов
     Server() {
         // Создаем объект TcpListener, привязываем его к локальному IP-адресу и порту 1234, и запускаем прослушивание
-        tcpListener = gcnew TcpListener(IPAddress::Parse("127.0.0.1"), 1234);
+        String^ ip = IPAddress::Any->ToString();
+        IPEndPoint^ ipEndPoint = gcnew IPEndPoint(IPAddress::Parse(ip), 1234);
+        tcpListener = gcnew TcpListener(ipEndPoint);
         tcpListener->Start();
 
         // Выводим сообщение о начале прослушивания
-        Console::WriteLine("Server is listening on port 1234...");
+        Console::WriteLine("Server is listening on port 1234... and ip:" + ip);
 
         while (true) {
             // Принимаем подключение от клиента
