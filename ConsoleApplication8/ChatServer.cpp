@@ -609,7 +609,7 @@ public:
     Server() {
         // Создаем объект TcpListener, привязываем его к локальному IP-адресу и порту 1234, и запускаем прослушивание
         String^ ip = IPAddress::Any->ToString();
-        IPEndPoint^ ipEndPoint = gcnew IPEndPoint(IPAddress::Parse(ip), 1234);
+        IPEndPoint^ ipEndPoint = gcnew IPEndPoint(IPAddress::Parse("127.0.0.1"), 1234);
         tcpListener = gcnew TcpListener(ipEndPoint);
         tcpListener->Start();
 
